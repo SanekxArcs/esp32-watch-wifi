@@ -56,6 +56,14 @@ WebServer server(80);            // Web server on port 80
 bool autoBrightnessEnabled = true; // Enable/disable automatic brightness adjustment
 Preferences preferences;         // For saving settings to flash
 
+// Timer/Countdown variables
+bool timerActive = false;        // Timer is currently running
+unsigned long timerDuration = 0; // Timer duration in seconds
+unsigned long timerStartTime = 0; // When the timer was started (millis())
+bool timerCompleted = false;     // Timer has reached zero
+unsigned long timerLastFlash = 0; // For flashing display when timer completes
+bool timerFlashState = false;    // Current flash state
+
 // Auto brightness settings (percentages)
 uint8_t dayBrightness = 100;     // Brightness percentage for day (9:00-18:00)
 uint8_t nightBrightness = 10;    // Brightness percentage for night (22:00-6:00)
@@ -233,6 +241,137 @@ void loadSettings() {
   preferences.end();
 }
 
+// ===== Timer Functions =====
+
+// Start the timer with specified duration
+void startTimer(unsigned long minutes, unsigned long seconds) {
+  timerDuration = (minutes * 60) + seconds;
+  timerStartTime = millis() / 1000; // Convert to seconds
+  timerActive = true;
+  timerCompleted = false;
+  Serial.print("Timer started for ");
+  Serial.print(minutes);
+  Serial.print(" minutes and ");
+  Serial.print(seconds);
+  Serial.println(" seconds");
+}
+
+// Stop the timer
+void stopTimer() {
+  timerActive = false;
+  timerCompleted = false;
+  Serial.println("Timer stopped");
+}
+
+// Reset the timer
+void resetTimer() {
+  timerActive = false;
+  timerCompleted = false;
+  Serial.println("Timer reset");
+}
+
+// Get remaining time in seconds
+long getTimerRemaining() {
+  if (!timerActive) return 0;
+  
+  unsigned long elapsedSeconds = (millis() / 1000) - timerStartTime;
+  long remaining = timerDuration - elapsedSeconds;
+  
+  if (remaining <= 0) {
+    remaining = 0;
+    if (!timerCompleted) {
+      timerCompleted = true;
+      Serial.println("Timer completed!");
+    }
+  }
+  
+  return remaining;
+}
+
+// Display the timer on the clock
+void displayTimer(CRGB color) {
+  long remaining = getTimerRemaining();
+  
+  // If timer completed, flash the display
+  if (timerCompleted) {
+    unsigned long currentMillis = millis();
+    if (currentMillis - timerLastFlash >= 500) { // Flash at 2Hz (500ms)
+      timerLastFlash = currentMillis;
+      timerFlashState = !timerFlashState;
+    }
+    
+    if (!timerFlashState) {
+      // During off phase of flashing, clear display
+      for (uint8_t i = 0; i < NUM_LEDS; i++) {
+        leds1[i] = CRGB::Black;
+        leds2[i] = CRGB::Black;
+        leds3[i] = CRGB::Black;
+        leds4[i] = CRGB::Black;
+      }
+      for (uint8_t i = 0; i < COLON_COUNT; i++) {
+        colon[i] = CRGB::Black;
+      }
+      FastLED.show();
+      return;
+    }
+    
+    // During on phase, show zeros
+    remaining = 0;
+  }
+  
+  // Convert seconds to minutes:seconds
+  uint8_t minutes = remaining / 60;
+  uint8_t seconds = remaining % 60;
+  
+  // Display minutes and seconds
+  displayDigit(minutes / 10, leds1, color);
+  displayDigit(minutes % 10, leds2, color);
+  displayDigit(seconds / 10, leds3, color);
+  displayDigit(seconds % 10, leds4, color);
+  
+  // Always show colon during timer mode
+  for (uint8_t i = 0; i < COLON_COUNT; i++) {
+    colon[i] = color;
+  }
+  
+  FastLED.show();
+}
+
+// Handle timer actions from web server
+void handleTimer() {
+  String action = server.arg("action");
+  
+  if (action == "start") {
+    unsigned long minutes = server.arg("minutes").toInt();
+    unsigned long seconds = server.arg("seconds").toInt();
+    minutes = constrain(minutes, 0, 99); // Max 99 minutes
+    seconds = constrain(seconds, 0, 59); // Max 59 seconds
+    
+    startTimer(minutes, seconds);
+  } 
+  else if (action == "stop") {
+    stopTimer();
+  } 
+  else if (action == "reset") {
+    resetTimer();
+  }
+  
+  // Send back current timer status as JSON
+  String response = "{";
+  response += "\"active\":" + String(timerActive ? "true" : "false") + ",";
+  response += "\"completed\":" + String(timerCompleted ? "true" : "false") + ",";
+  
+  long remaining = getTimerRemaining();
+  uint8_t minutes = remaining / 60;
+  uint8_t seconds = remaining % 60;
+  
+  response += "\"minutes\":" + String(minutes) + ",";
+  response += "\"seconds\":" + String(seconds);
+  response += "}";
+  
+  server.send(200, "application/json", response);
+}
+
 // ===== Web Server Handlers =====
 
 // Main page with Tailwind CSS for styling
@@ -245,9 +384,65 @@ void handleRoot() {
   html += "<script src='https://cdn.jsdelivr.net/npm/@jaames/iro@5'></script>"; // Add color picker library
   html += "</head><body class='bg-gray-100 flex items-center justify-center min-h-screen'>";
   html += "<div class='bg-white shadow-lg rounded-lg p-8 max-w-md w-full'>";
-  html += "<h1 class='text-2xl font-bold mb-6 text-center'>Clock Settings</h1>";
+
   html += "<form action='/set' method='GET' class='space-y-4'>";
+
+  html += "<div class='mt-8 border-t border-b py-3'>";
+    // Timer status
+  html += "<div class='mt-4 text-center' id='timer-status'>";
+  html += timerActive ? (timerCompleted ? "Timer completed!" : "Timer running...") : "Timer ready";
+  html += "</div>";
+    // Display current timer value
+  html += "<div class='text-2xl font-mono font-bold text-center mt-2' id='timer-display'>";
+  if (timerActive) {
+    long remaining = getTimerRemaining();
+    uint8_t minutes = remaining / 60;
+    uint8_t seconds = remaining % 60;
+    char buf[6];
+    sprintf(buf, "%02d:%02d", minutes, seconds);
+    html += buf;
+  } else {
+    html += "00:00";
+  }
+  html += "</div>";
+  // Timer inputs
+  html += "<div class='flex space-x-2 mb-4'>";
+  html += "<div class='flex-grow'>";
+  html += "<label class='block text-gray-700 text-sm'>Minutes:</label>";
+  html += "<input type='number' id='timer-minutes' min='0' max='99' value='0' class='mt-1 block w-full px-3 py-2 border rounded-md text-sm'>";
+  html += "</div>";
+  html += "<div class='flex-grow'>";
+  html += "<label class='block text-gray-700 text-sm'>Seconds:</label>";
+  html += "<input type='number' id='timer-seconds' min='0' max='59' value='0' class='mt-1 block w-full px-3 py-2 border rounded-md text-sm'>";
+  html += "</div>";
+  html += "</div>";
   
+  // Quick preset buttons
+  html += "<div class='mb-4'>";
+  html += "<label class='block text-gray-700 text-sm mb-1'>Quick presets:</label>";
+  html += "<div class='grid grid-cols-3 gap-2'>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='5'>5 min</button>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='10'>10 min</button>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='15'>15 min</button>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='30'>30 min</button>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='60'>1 hour</button>";
+  html += "<button type='button' class='timer-preset bg-gray-200 hover:bg-gray-300 text-gray-800 py-1 px-2 rounded text-sm' data-minutes='90'>1.5 hours</button>";
+  html += "</div>";
+  html += "</div>";
+  
+  // Timer controls
+  html += "<div class='flex justify-center space-x-2'>";
+  html += "<button type='button' id='timer-start' class='bg-green-500 text-white py-1 px-2 rounded hover:bg-green-600'>Start</button>";
+  html += "<button type='button' id='timer-stop' class='bg-yellow-500 text-white py-1 px-2 rounded hover:bg-yellow-600'>Stop</button>";
+  html += "<button type='button' id='timer-reset' class='bg-red-500 text-white py-1 px-2 rounded hover:bg-red-600'>Reset</button>";
+  html += "</div>";
+  
+
+  
+
+  html += "</div>";
+
+  html += "<h1 class='text-2xl font-bold mb-6 text-center'>Clock Settings</h1>";
   // Brightness field (in %)
   html += "<div>";
   html += "<label class='block text-gray-700'>Max Brightness (0-100%):</label>";
@@ -327,6 +522,7 @@ void handleRoot() {
   html += "</div>";
   html += "</div>";
   
+  
   html += "<div class='text-center mt-6'>";
   html += "<input type='submit' value='Update Settings' class='bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600'>";
   html += "</div>";
@@ -387,6 +583,57 @@ void handleRoot() {
   html += "  document.getElementById('color-preview').style.backgroundColor = hexColor;";
   html += "  document.getElementById('color-hex').textContent = hexColor;";
   html += "});";
+  
+  // Timer controls
+  html += "document.getElementById('timer-start').addEventListener('click', function() {";
+  html += "  var minutes = document.getElementById('timer-minutes').value;";
+  html += "  var seconds = document.getElementById('timer-seconds').value;";
+  html += "  fetch('/timer?action=start&minutes=' + minutes + '&seconds=' + seconds)";
+  html += "    .then(response => response.json())";
+  html += "    .then(data => updateTimerUI(data));";
+  html += "});";
+  
+  html += "document.getElementById('timer-stop').addEventListener('click', function() {";
+  html += "  fetch('/timer?action=stop')";
+  html += "    .then(response => response.json())";
+  html += "    .then(data => updateTimerUI(data));";
+  html += "});";
+  
+  html += "document.getElementById('timer-reset').addEventListener('click', function() {";
+  html += "  fetch('/timer?action=reset')";
+  html += "    .then(response => response.json())";
+  html += "    .then(data => updateTimerUI(data));";
+  html += "});";
+  
+  // Add handler for preset buttons
+  html += "document.querySelectorAll('.timer-preset').forEach(function(button) {";
+  html += "  button.addEventListener('click', function() {";
+  html += "    var minutes = parseInt(this.getAttribute('data-minutes'));";
+  html += "    document.getElementById('timer-minutes').value = minutes;";
+  html += "    document.getElementById('timer-seconds').value = 0;";
+  html += "  });";
+  html += "});";
+  
+  // Timer UI update function
+  html += "function updateTimerUI(data) {";
+  html += "  var statusEl = document.getElementById('timer-status');";
+  html += "  var displayEl = document.getElementById('timer-display');";
+  html += "  if (data.active) {";
+  html += "    statusEl.textContent = data.completed ? 'Timer completed!' : 'Timer running...';";
+  html += "  } else {";
+  html += "    statusEl.textContent = 'Timer ready';";
+  html += "  }";
+  html += "  displayEl.textContent = ('0' + data.minutes).slice(-2) + ':' + ('0' + data.seconds).slice(-2);";
+  html += "}";
+  
+  // Poll timer status every second when active
+  html += "if (" + String(timerActive ? "true" : "false") + ") {";
+  html += "  setInterval(function() {";
+  html += "    fetch('/timer?action=status')";
+  html += "      .then(response => response.json())";
+  html += "      .then(data => updateTimerUI(data));";
+  html += "  }, 1000);";
+  html += "}";
   
   html += "</script>";
   
@@ -492,6 +739,7 @@ void setup() {
   // Start web server
   server.on("/", handleRoot);
   server.on("/set", handleSet);
+  server.on("/timer", handleTimer);
   server.begin();
   Serial.println("Web server started!");
   
@@ -514,15 +762,20 @@ void loop() {
   // Determine current color based on mode
   CRGB currentColor = (mode == 0) ? CHSV(globalHue, 255, 255) : staticColor;
   
-  // Display clock if time obtained; if not, show status "2"
-  if (timeStatus() == timeSet) {
-    displayTime(currentColor);
+  // Check if timer is active and display it, otherwise show the clock
+  if (timerActive) {
+    displayTimer(currentColor);
   } else {
-    if (WiFi.status() == WL_CONNECTED) {
-      displayStatus(2, currentColor);
-    } else {
-      // If Wi‑Fi is lost after time was obtained, continue displaying last time
+    // Normal clock display
+    if (timeStatus() == timeSet) {
       displayTime(currentColor);
+    } else {
+      if (WiFi.status() == WL_CONNECTED) {
+        displayStatus(2, currentColor);
+      } else {
+        // If Wi‑Fi is lost after time was obtained, continue displaying last time
+        displayTime(currentColor);
+      }
     }
   }
   
