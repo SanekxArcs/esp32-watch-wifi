@@ -438,6 +438,26 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     saveSettings();
     sendMQTTResponse("rainbowSpeed", String(rainbowSpeed));
   }
+  else if (command == "setAutoBrightness") {
+    autoBrightnessEnabled = doc["enabled"].as<bool>();
+    saveSettings();
+    sendMQTTResponse("autoBrightness", String(autoBrightnessEnabled ? "true" : "false"));
+  }
+  else if (command == "setDayBrightness") {
+    dayBrightness = constrain(doc["value"].as<int>(), 0, 100);
+    saveSettings();
+    sendMQTTResponse("dayBrightness", String(dayBrightness));
+  }
+  else if (command == "setNightBrightness") {
+    nightBrightness = constrain(doc["value"].as<int>(), 0, 100);
+    saveSettings();
+    sendMQTTResponse("nightBrightness", String(nightBrightness));
+  }
+  else if (command == "setTransitionBrightness") {
+    transitionBrightness = constrain(doc["value"].as<int>(), 0, 100);
+    saveSettings();
+    sendMQTTResponse("transitionBrightness", String(transitionBrightness));
+  }
   else if (command == "startTimer") {
     unsigned long minutes = constrain(doc["minutes"].as<int>(), 0, 99);
     unsigned long seconds = constrain(doc["seconds"].as<int>(), 0, 59);
@@ -507,6 +527,9 @@ void sendStatusUpdate() {
   doc["color"]["blue"] = staticColor.blue;
   doc["rainbowSpeed"] = rainbowSpeed;
   doc["autoBrightness"] = autoBrightnessEnabled;
+  doc["dayBrightness"] = dayBrightness;
+  doc["nightBrightness"] = nightBrightness;
+  doc["transitionBrightness"] = transitionBrightness;
   doc["timer"]["active"] = timerActive;
   doc["timer"]["completed"] = timerCompleted;
   

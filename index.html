@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 Watch Remote Control</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen py-8">
+    <div class="container mx-auto px-4 max-w-6xl">
+        <h1 class="text-3xl font-bold text-center mb-8 text-gray-800">ESP32 Watch Remote Control</h1>
+        
+        <!-- Connection Status -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Connection Status</h2>
+            <div id="connectionStatus" class="flex items-center">
+                <div id="statusIndicator" class="w-4 h-4 rounded-full bg-red-500 mr-3"></div>
+                <span id="statusText">Disconnected</span>
+            </div>
+            <div class="mt-4">
+                <label for="deviceId" class="block text-sm font-medium text-gray-700 mb-2">Device ID:</label>
+                <input type="text" id="deviceId" placeholder="esp32_watch_001" 
+                       class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+                <button onclick="connectMQTT()" class="mt-2 bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                    Connect
+                </button>
+            </div>
+        </div>
+
+        <!-- Device Status -->
+        <div class="bg-white rounded-lg shadow-md p-6 mb-6">
+            <h2 class="text-xl font-semibold mb-4">Device Status</h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                    <p><strong>Time:</strong> <span id="deviceTime">--</span></p>
+                    <p><strong>WiFi IP:</strong> <span id="deviceIP">--</span></p>
+                    <p><strong>Mode:</strong> <span id="deviceMode">--</span></p>
+                    <p><strong>Brightness:</strong> <span id="deviceBrightness">--</span></p>
+                </div>
+                <div>
+                    <p><strong>Color:</strong> <span id="deviceColor">--</span></p>
+                    <p><strong>Rainbow Speed:</strong> <span id="deviceRainbowSpeed">--</span></p>
+                    <p><strong>Auto Brightness:</strong> <span id="deviceAutoBrightness">--</span></p>
+                </div>
+                <div>
+                    <p><strong>Timer Active:</strong> <span id="timerActive">--</span></p>
+                    <p><strong>Timer Time:</strong> <span id="timerTime">--</span></p>
+                </div>
+            </div>
+            <button onclick="requestStatus()" class="mt-4 bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">
+                Refresh Status
+            </button>
+        </div>
+
+        <!-- Main Controls Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Display Controls -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-semibold mb-4">Display Controls</h2>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Mode:</label>
+                    <select id="modeSelect" onchange="setMode()" class="w-full px-3 py-2 border border-gray-300 rounded-md">
+                        <option value="0">Rainbow</option>
+                        <option value="1">Static Color</option>
+                    </select>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Manual Brightness:</label>
+                    <input type="range" id="brightnessSlider" min="1" max="255" value="25" 
+                           onchange="setBrightness()" class="w-full">
+                    <div class="text-center text-sm text-gray-600">
+                        <span id="brightnessValue">25</span>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Static Color:</label>
+                    <div class="flex space-x-2">
+                        <input type="color" id="colorPicker" onchange="setColor()" class="w-16 h-10 border rounded">
+                        <button onclick="setColor()" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                            Set Color
+                        </button>
+                    </div>
+                </div>
+
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Rainbow Speed:</label>
+                    <input type="range" id="rainbowSpeedSlider" min="1" max="10" value="1" 
+                           onchange="setRainbowSpeed()" class="w-full">
+                    <div class="text-center text-sm text-gray-600">
+                        <span id="rainbowSpeedValue">1</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Auto Brightness Controls -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-semibold mb-4">Auto Brightness</h2>
+                
+                <div class="mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" id="autoBrightnessCheck" onchange="setAutoBrightness()" 
+                               class="rounded border-gray-300 text-blue-600 shadow-sm focus:border-blue-300 focus:ring focus:ring-blue-200">
+                        <span class="ml-2 text-sm">Auto adjust brightness by time of day</span>
+                    </label>
+                </div>
+
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Day Brightness (9:00-18:00):
+                        </label>
+                        <input type="number" id="dayBrightness" min="0" max="100" value="100" 
+                               onchange="setDayBrightness()" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        <div class="text-xs text-gray-500 mt-1">0-100%</div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Night Brightness (22:00-6:00):
+                        </label>
+                        <input type="number" id="nightBrightness" min="0" max="100" value="10" 
+                               onchange="setNightBrightness()" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        <div class="text-xs text-gray-500 mt-1">0-100%</div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">
+                            Transition Brightness (6:00-9:00 & 18:00-22:00):
+                        </label>
+                        <input type="number" id="transitionBrightness" min="0" max="100" value="50" 
+                               onchange="setTransitionBrightness()" 
+                               class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        <div class="text-xs text-gray-500 mt-1">0-100%</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timer Controls -->
+            <div class="bg-white rounded-lg shadow-md p-6">
+                <h2 class="text-xl font-semibold mb-4">Timer Controls</h2>
+                
+                <!-- Quick Presets -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Quick presets:</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="setTimerPreset(5, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            5 min
+                        </button>
+                        <button onclick="setTimerPreset(10, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            10 min
+                        </button>
+                        <button onclick="setTimerPreset(15, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            15 min
+                        </button>
+                        <button onclick="setTimerPreset(30, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            30 min
+                        </button>
+                        <button onclick="setTimerPreset(60, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            1 hour
+                        </button>
+                        <button onclick="setTimerPreset(90, 0)" class="bg-gray-200 text-gray-800 py-2 px-3 rounded text-sm hover:bg-gray-300">
+                            1.5 hours
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Manual Timer Input -->
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Custom Timer:</label>
+                    <div class="flex space-x-2 mb-2">
+                        <div class="flex-1">
+                            <label class="block text-xs text-gray-600 mb-1">Minutes:</label>
+                            <input type="number" id="timerMinutes" min="0" max="99" value="5" 
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        </div>
+                        <div class="flex-1">
+                            <label class="block text-xs text-gray-600 mb-1">Seconds:</label>
+                            <input type="number" id="timerSeconds" min="0" max="59" value="0" 
+                                   class="w-full px-3 py-2 border border-gray-300 rounded-md text-sm">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Timer Control Buttons -->
+                <div class="space-y-2">
+                    <button onclick="startTimer()" class="w-full bg-green-500 text-white py-2 rounded hover:bg-green-600">
+                        Start Timer
+                    </button>
+                    <button onclick="stopTimer()" class="w-full bg-red-500 text-white py-2 rounded hover:bg-red-600">
+                        Stop Timer
+                    </button>
+                    <button onclick="resetTimer()" class="w-full bg-yellow-500 text-white py-2 rounded hover:bg-yellow-600">
+                        Reset Timer
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Log -->
+        <div class="bg-white rounded-lg shadow-md p-6 mt-6">
+            <h2 class="text-xl font-semibold mb-4">Communication Log</h2>
+            <div id="logContainer" class="bg-gray-50 p-4 rounded border h-48 overflow-y-scroll font-mono text-sm">
+            </div>
+            <button onclick="clearLog()" class="mt-2 bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">
+                Clear Log
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let mqttClient = null;
+        let deviceId = 'esp32_watch_001';
+        let topics = {
+            command: '',
+            status: '',
+            response: ''
+        };
+
+        function updateTopics() {
+            deviceId = document.getElementById('deviceId').value || 'esp32_watch_001';
+            topics.command = `esp32watch/${deviceId}/command`;
+            topics.status = `esp32watch/${deviceId}/status`;
+            topics.response = `esp32watch/${deviceId}/response`;
+        }
+
+        function connectMQTT() {
+            updateTopics();
+            
+            if (mqttClient) {
+                mqttClient.end();
+            }
+
+            // Using a public MQTT broker
+            const brokerUrl = 'wss://broker.hivemq.com:8884/mqtt';
+            
+            log('Connecting to MQTT broker...');
+            
+            mqttClient = mqtt.connect(brokerUrl);
+
+            mqttClient.on('connect', function() {
+                log('Connected to MQTT broker');
+                document.getElementById('statusIndicator').className = 'w-4 h-4 rounded-full bg-green-500 mr-3';
+                document.getElementById('statusText').textContent = 'Connected';
+                
+                // Subscribe to topics
+                mqttClient.subscribe(topics.status);
+                mqttClient.subscribe(topics.response);
+                log(`Subscribed to ${topics.status}`);
+                log(`Subscribed to ${topics.response}`);
+                
+                // Request initial status
+                requestStatus();
+            });
+
+            mqttClient.on('message', function(topic, message) {
+                const data = JSON.parse(message.toString());
+                log(`Received: ${topic} - ${message.toString()}`);
+                
+                if (topic === topics.status) {
+                    updateDeviceStatus(data);
+                } else if (topic === topics.response) {
+                    log(`Response: ${JSON.stringify(data)}`);
+                }
+            });
+
+            mqttClient.on('error', function(error) {
+                log(`MQTT Error: ${error}`);
+                document.getElementById('statusIndicator').className = 'w-4 h-4 rounded-full bg-red-500 mr-3';
+                document.getElementById('statusText').textContent = 'Error';
+            });
+
+            mqttClient.on('close', function() {
+                log('MQTT connection closed');
+                document.getElementById('statusIndicator').className = 'w-4 h-4 rounded-full bg-red-500 mr-3';
+                document.getElementById('statusText').textContent = 'Disconnected';
+            });
+        }
+
+        function sendCommand(command, data = {}) {
+            if (!mqttClient || !mqttClient.connected) {
+                log('Error: Not connected to MQTT');
+                return;
+            }
+
+            const message = {
+                command: command,
+                timestamp: Date.now(),
+                ...data
+            };
+
+            mqttClient.publish(topics.command, JSON.stringify(message));
+            log(`Sent command: ${command} - ${JSON.stringify(data)}`);
+        }
+
+        function updateDeviceStatus(data) {
+            document.getElementById('deviceTime').textContent = data.time || '--';
+            document.getElementById('deviceIP').textContent = data.wifi?.ip || '--';
+            document.getElementById('deviceMode').textContent = data.mode === 0 ? 'Rainbow' : 'Static Color';
+            document.getElementById('deviceBrightness').textContent = data.brightness || '--';
+            document.getElementById('deviceColor').textContent = 
+                data.color ? `R:${data.color.red} G:${data.color.green} B:${data.color.blue}` : '--';
+            document.getElementById('deviceRainbowSpeed').textContent = data.rainbowSpeed || '--';
+            document.getElementById('deviceAutoBrightness').textContent = data.autoBrightness ? 'Enabled' : 'Disabled';
+            document.getElementById('timerActive').textContent = data.timer?.active ? 'Yes' : 'No';
+            document.getElementById('timerTime').textContent = 
+                data.timer?.active ? `${data.timer.minutes}:${data.timer.seconds.toString().padStart(2, '0')}` : '--';
+            
+            // Update controls
+            if (data.brightness) {
+                document.getElementById('brightnessSlider').value = data.brightness;
+                document.getElementById('brightnessValue').textContent = data.brightness;
+            }
+            if (data.mode !== undefined) {
+                document.getElementById('modeSelect').value = data.mode;
+            }
+            if (data.rainbowSpeed) {
+                document.getElementById('rainbowSpeedSlider').value = data.rainbowSpeed;
+                document.getElementById('rainbowSpeedValue').textContent = data.rainbowSpeed;
+            }
+            if (data.color) {
+                const hex = rgbToHex(data.color.red, data.color.green, data.color.blue);
+                document.getElementById('colorPicker').value = hex;
+            }
+            if (data.autoBrightness !== undefined) {
+                document.getElementById('autoBrightnessCheck').checked = data.autoBrightness;
+            }
+            if (data.dayBrightness !== undefined) {
+                document.getElementById('dayBrightness').value = data.dayBrightness;
+            }
+            if (data.nightBrightness !== undefined) {
+                document.getElementById('nightBrightness').value = data.nightBrightness;
+            }
+            if (data.transitionBrightness !== undefined) {
+                document.getElementById('transitionBrightness').value = data.transitionBrightness;
+            }
+        }
+
+        function rgbToHex(r, g, b) {
+            return "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
+        }
+
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
+        }
+
+        function log(message) {
+            const logContainer = document.getElementById('logContainer');
+            const timestamp = new Date().toLocaleTimeString();
+            logContainer.innerHTML += `[${timestamp}] ${message}\n`;
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function clearLog() {
+            document.getElementById('logContainer').innerHTML = '';
+        }
+
+        // Control functions
+        function requestStatus() {
+            sendCommand('getStatus');
+        }
+
+        function setMode() {
+            const mode = parseInt(document.getElementById('modeSelect').value);
+            sendCommand('setMode', { value: mode });
+        }
+
+        function setBrightness() {
+            const brightness = parseInt(document.getElementById('brightnessSlider').value);
+            document.getElementById('brightnessValue').textContent = brightness;
+            sendCommand('setBrightness', { value: brightness });
+        }
+
+        function setColor() {
+            const hex = document.getElementById('colorPicker').value;
+            const rgb = hexToRgb(hex);
+            if (rgb) {
+                sendCommand('setColor', { red: rgb.r, green: rgb.g, blue: rgb.b });
+            }
+        }
+
+        function setRainbowSpeed() {
+            const speed = parseInt(document.getElementById('rainbowSpeedSlider').value);
+            document.getElementById('rainbowSpeedValue').textContent = speed;
+            sendCommand('setRainbowSpeed', { value: speed });
+        }
+
+        // Auto brightness functions
+        function setAutoBrightness() {
+            const enabled = document.getElementById('autoBrightnessCheck').checked;
+            sendCommand('setAutoBrightness', { enabled: enabled });
+        }
+
+        function setDayBrightness() {
+            const value = parseInt(document.getElementById('dayBrightness').value);
+            sendCommand('setDayBrightness', { value: value });
+        }
+
+        function setNightBrightness() {
+            const value = parseInt(document.getElementById('nightBrightness').value);
+            sendCommand('setNightBrightness', { value: value });
+        }
+
+        function setTransitionBrightness() {
+            const value = parseInt(document.getElementById('transitionBrightness').value);
+            sendCommand('setTransitionBrightness', { value: value });
+        }
+
+        // Timer functions
+        function setTimerPreset(minutes, seconds) {
+            document.getElementById('timerMinutes').value = minutes;
+            document.getElementById('timerSeconds').value = seconds;
+            startTimer();
+        }
+
+        function startTimer() {
+            const minutes = parseInt(document.getElementById('timerMinutes').value) || 0;
+            const seconds = parseInt(document.getElementById('timerSeconds').value) || 0;
+            sendCommand('startTimer', { minutes: minutes, seconds: seconds });
+        }
+
+        function stopTimer() {
+            sendCommand('stopTimer');
+        }
+
+        function resetTimer() {
+            sendCommand('resetTimer');
+        }
+
+        // Initialize
+        document.getElementById('deviceId').value = deviceId;
+    </script>
+</body>
+</html>
