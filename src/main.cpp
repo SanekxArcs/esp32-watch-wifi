@@ -3,6 +3,8 @@
 #include <WebServer.h>
 #include <ezTime.h>
 #include <Preferences.h> // Add Preferences library for settings persistence
+#include <PubSubClient.h> // MQTT library
+#include <ArduinoJson.h>  // JSON library for MQTT messages
 
 // ===== LED Settings =====
 #define NUM_LEDS    7       // Number of segments per digit
@@ -43,6 +45,17 @@ const PROGMEM bool letter_space[NUM_LEDS] = {0, 0, 0, 0, 0, 0, 0};  // Blank dis
 const char* ssid     = "SANDS_WiFi";
 const char* password = "Ytp@29!144";
 
+// ===== MQTT Settings =====
+const char* mqtt_server = "broker.hivemq.com"; // Free public MQTT broker
+const int mqtt_port = 1883;
+const char* device_id = "esp32_watch_001"; // Unique device ID - change this!
+String mqtt_topic_command = "esp32watch/" + String(device_id) + "/command";
+String mqtt_topic_status = "esp32watch/" + String(device_id) + "/status";
+String mqtt_topic_response = "esp32watch/" + String(device_id) + "/response";
+
+WiFiClient espClient;
+PubSubClient mqttClient(espClient);
+
 // Time zone for Poland (auto-adjusts for DST)
 Timezone Poland;
 
@@ -72,6 +85,10 @@ uint8_t transitionBrightness = 50; // Brightness percentage for transition perio
 // Timing variables for non-blocking operation
 unsigned long lastColonUpdate = 0;
 bool colonState = false;
+
+// ===== Function Forward Declarations =====
+void sendMQTTResponse(String key, String value);
+void sendStatusUpdate();
 
 // ===== Display Functions =====
 
@@ -370,6 +387,145 @@ void handleTimer() {
   response += "}";
   
   server.send(200, "application/json", response);
+}
+
+// ===== MQTT Functions =====
+
+// MQTT callback function - handles incoming messages
+void mqttCallback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (int i = 0; i < length; i++) {
+    message += (char)payload[i];
+  }
+  
+  Serial.print("MQTT message received on topic: ");
+  Serial.print(topic);
+  Serial.print(" - Message: ");
+  Serial.println(message);
+  
+  // Parse JSON message
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, message);
+  
+  if (error) {
+    Serial.print("JSON parsing failed: ");
+    Serial.println(error.c_str());
+    return;
+  }
+  
+  // Handle different commands
+  String command = doc["command"].as<String>();
+  
+  if (command == "setBrightness") {
+    userBrightness = constrain(doc["value"].as<int>(), 1, 255);
+    saveSettings();
+    sendMQTTResponse("brightness", String(userBrightness));
+  }
+  else if (command == "setMode") {
+    mode = constrain(doc["value"].as<int>(), 0, 1);
+    saveSettings();
+    sendMQTTResponse("mode", String(mode));
+  }
+  else if (command == "setColor") {
+    staticColor.red = constrain(doc["red"].as<int>(), 0, 255);
+    staticColor.green = constrain(doc["green"].as<int>(), 0, 255);
+    staticColor.blue = constrain(doc["blue"].as<int>(), 0, 255);
+    saveSettings();
+    sendMQTTResponse("color", String(staticColor.red) + "," + String(staticColor.green) + "," + String(staticColor.blue));
+  }
+  else if (command == "setRainbowSpeed") {
+    rainbowSpeed = constrain(doc["value"].as<int>(), 1, 10);
+    saveSettings();
+    sendMQTTResponse("rainbowSpeed", String(rainbowSpeed));
+  }
+  else if (command == "startTimer") {
+    unsigned long minutes = constrain(doc["minutes"].as<int>(), 0, 99);
+    unsigned long seconds = constrain(doc["seconds"].as<int>(), 0, 59);
+    startTimer(minutes, seconds);
+    sendMQTTResponse("timer", "started");
+  }
+  else if (command == "stopTimer") {
+    stopTimer();
+    sendMQTTResponse("timer", "stopped");
+  }
+  else if (command == "resetTimer") {
+    resetTimer();
+    sendMQTTResponse("timer", "reset");
+  }
+  else if (command == "getStatus") {
+    sendStatusUpdate();
+  }
+}
+
+// Connect to MQTT broker
+void connectMQTT() {
+  while (!mqttClient.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    
+    if (mqttClient.connect(device_id)) {
+      Serial.println("connected");
+      // Subscribe to command topic
+      mqttClient.subscribe(mqtt_topic_command.c_str());
+      Serial.print("Subscribed to: ");
+      Serial.println(mqtt_topic_command);
+      
+      // Send initial status
+      sendStatusUpdate();
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(mqttClient.state());
+      Serial.println(" try again in 5 seconds");
+      delay(5000);
+    }
+  }
+}
+
+// Send response via MQTT
+void sendMQTTResponse(String key, String value) {
+  JsonDocument doc;
+  doc["device"] = device_id;
+  doc["timestamp"] = millis();
+  doc[key] = value;
+  
+  String output;
+  serializeJson(doc, output);
+  
+  mqttClient.publish(mqtt_topic_response.c_str(), output.c_str());
+  Serial.print("MQTT response sent: ");
+  Serial.println(output);
+}
+
+// Send complete status update via MQTT
+void sendStatusUpdate() {
+  JsonDocument doc;
+  doc["device"] = device_id;
+  doc["timestamp"] = millis();
+  doc["brightness"] = userBrightness;
+  doc["mode"] = mode;
+  doc["color"]["red"] = staticColor.red;
+  doc["color"]["green"] = staticColor.green;
+  doc["color"]["blue"] = staticColor.blue;
+  doc["rainbowSpeed"] = rainbowSpeed;
+  doc["autoBrightness"] = autoBrightnessEnabled;
+  doc["timer"]["active"] = timerActive;
+  doc["timer"]["completed"] = timerCompleted;
+  
+  if (timerActive) {
+    long remaining = getTimerRemaining();
+    doc["timer"]["minutes"] = remaining / 60;
+    doc["timer"]["seconds"] = remaining % 60;
+  }
+  
+  doc["wifi"]["connected"] = (WiFi.status() == WL_CONNECTED);
+  doc["wifi"]["ip"] = WiFi.localIP().toString();
+  doc["time"] = Poland.dateTime();
+  
+  String output;
+  serializeJson(doc, output);
+  
+  mqttClient.publish(mqtt_topic_status.c_str(), output.c_str());
+  Serial.print("Status update sent: ");
+  Serial.println(output);
 }
 
 // ===== Web Server Handlers =====
@@ -728,6 +884,11 @@ void setup() {
   }
   Serial.println("Wi‑Fi Connected!");
   
+  // Initialize MQTT
+  mqttClient.setServer(mqtt_server, mqtt_port);
+  mqttClient.setCallback(mqttCallback);
+  connectMQTT();
+  
   // Initialize and set the time using ezTime
   waitForSync(2);  // 30 seconds timeout
   
@@ -752,6 +913,12 @@ void setup() {
 void loop() {
   // Update brightness based on time of day
   FastLED.setBrightness(getTimeBrightness());
+  
+  // Handle MQTT connection and messages
+  if (!mqttClient.connected()) {
+    connectMQTT();
+  }
+  mqttClient.loop();
   
   // Handle web server requests
   server.handleClient();
